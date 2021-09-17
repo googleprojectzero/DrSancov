@@ -162,7 +162,7 @@ static void ParseEnvironmentConfig() {
     } else if (it.first == "exitcode") {
       globals::config->exitcode = atoi(it.second.c_str());
     } else if (it.first == "log_path") {
-      globals::config->log_path = it.second;
+      globals::config->log_path = it.second + "." + std::to_string(getpid());
     } else if (it.first == "coverage_dir") {
       globals::config->coverage_dir = it.second;
     }
@@ -232,11 +232,10 @@ DR_EXPORT void dr_init(client_id_t id) {
 
 void EventExit(void) {
   const uint64_t kMagic = SANCOV_MAGIC;
-  char buffer[MAX_PATH];
   FILE *f;
 
   dr_mutex_lock(globals::mod_lock);
-  
+
   for (int i = 0; i < globals::modules.size(); i++) {
     // Skip modules with no coverage information, system modules and the loader
     // image.
@@ -246,7 +245,7 @@ void EventExit(void) {
     }
 
     const char *preferred_name = dr_module_preferred_name(globals::modules[i].info);
-    const char *blacklist[] = {
+    const char *ignored_list[] = {
       "ld-linux.so",
       "ld-linux-x86-64.so",
       "libstdc++.so",
@@ -261,24 +260,23 @@ void EventExit(void) {
       NULL
     };
 
-    bool blacklisted = false;
-    for (int j = 0; blacklist[j] != NULL; j++) {
-      if (!strncmp(preferred_name, blacklist[j], strlen(blacklist[j]))) {
-        blacklisted = true;
+    bool ignored = false;
+    for (int j = 0; ignored_list[j] != NULL; j++) {
+      if (!strncmp(preferred_name, ignored_list[j], strlen(ignored_list[j]))) {
+        ignored = true;
         break;
       }
     }
 
-    if (blacklisted) {
+    if (ignored) {
       continue;
     }
 
-    snprintf(buffer, sizeof(buffer), "%s/%s.%d.sancov",
-             globals::config->coverage_dir.c_str(),
-             dr_module_preferred_name(globals::modules[i].info),
-             getpid());
+    const std::string sancov_path =
+        globals::config->coverage_dir + "/" + preferred_name + "." +
+        std::to_string(getpid()) + ".sancov";
 
-    f = fopen(buffer, "w+b");
+    f = fopen(sancov_path.c_str(), "w+b");
     if (f != NULL) {
       fwrite(&kMagic, sizeof(kMagic), 1, f);
 
@@ -292,19 +290,21 @@ void EventExit(void) {
       fclose(f);
 
       fprintf(stderr, "DrSanitizerCoverage: %s: %d PCs written\n",
-              buffer, globals::modules[i].trace_count);
+              sancov_path.c_str(), globals::modules[i].trace_count);
     } else {
-      fprintf(stderr, "[-] Unable to write to the \"%s\" log file\n", buffer);
+      fprintf(stderr, "[-] Unable to write to the \"%s\" log file\n",
+              sancov_path.c_str());
     }
 
     free(globals::modules[i].bitmap);
   }
 
   if (!globals::unclassified_traces.empty()) {
-    snprintf(buffer, sizeof(buffer), "%s/unknown.%d.sancov",
-             globals::config->coverage_dir.c_str(), getpid());
+    std::string sancov_path =
+        globals::config->coverage_dir + "/unknown." + std::to_string(getpid()) +
+        ".sancov";
 
-    f = fopen(buffer, "w+b");
+    f = fopen(sancov_path.c_str(), "w+b");
     if (f != NULL) {
       fwrite(&kMagic, sizeof(kMagic), 1, f);
 
@@ -315,9 +315,10 @@ void EventExit(void) {
       fclose(f);
 
       fprintf(stderr, "DrSanitizerCoverage: %s: %zu PCs written\n",
-              buffer, globals::unclassified_traces.size());
+              sancov_path.c_str(), globals::unclassified_traces.size());
     } else {
-      fprintf(stderr, "[-] Unable to write to the \"%s\" log file\n", buffer);
+      fprintf(stderr, "[-] Unable to write to the \"%s\" log file\n",
+              sancov_path.c_str());
     }
   }
 
@@ -345,7 +346,7 @@ dr_emit_flags_t EventBasicBlock(void *drcontext, void *tag, instrlist_t *bb, ins
   if (last_idx == -1) {
     last_idx = FindModuleByAddress(pc);
   }
- 
+
   if (last_idx == -1) {
     if (globals::config->log_unknown_addresses) {
       globals::unclassified_traces.insert(pc);
@@ -369,7 +370,7 @@ dr_signal_action_t EventSignal(void *drcontext, dr_siginfo_t *siginfo) {
   const bool asan_crash = (signal_string != NULL);
   const void *orig_pc = siginfo->mcontext->pc;
   dr_mcontext_t *ctx;
- 
+
   if (siginfo->raw_mcontext_valid) {
     ctx = siginfo->raw_mcontext;
   } else {
@@ -379,10 +380,7 @@ dr_signal_action_t EventSignal(void *drcontext, dr_siginfo_t *siginfo) {
   // If requested by the user, open the output log file.
   FILE *output_log = NULL;
   if (!globals::config->log_path.empty() && asan_crash) {
-    char buffer[MAX_PATH];
-    snprintf(buffer, sizeof(buffer), "%s.%d", globals::config->log_path.c_str(), getpid());
-
-    output_log = fopen(buffer, "w+");
+    output_log = fopen(globals::config->log_path.c_str(), "w+");
   }
 
   if (asan_crash) {
