@@ -38,7 +38,10 @@ void Log(FILE *output_log, const char *format, ...) {
   va_start(args, format);
 
   if (output_log != NULL) {
-    vfprintf(output_log, format, args);
+    va_list log_args;
+    va_copy(log_args, args);
+    vfprintf(output_log, format, log_args);
+    va_end(log_args);
   }
   vfprintf(stderr, format, args);
 
